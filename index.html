@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Asteroids vs Zombies Espaciais</title>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: radial-gradient(ellipse at center, #02020a 0%, #0c0c2e 80%);
+    color: white;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    user-select: none;
+  }
+
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: #010114;
+    border: 2px solid #444;
+    box-shadow: 0 0 20px #0ff;
+    border-radius: 10px;
+  }
+
+  #ui {
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    z-index: 10;
+  }
+
+  #spatialButton {
+    background-color: #0ff;
+    color: #020214;
+    border: none;
+    padding: 10px 20px;
+    font-weight: bold;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 18px;
+    transition: background-color 0.3s ease;
+    box-shadow: 0 0 10px #0ff;
+  }
+
+  #spatialButton:active {
+    background-color: #06c;
+    box-shadow: 0 0 15px #06c;
+  }
+
+  #score {
+    margin-top: 10px;
+    font-size: 20px;
+  }
+
+  #instructions {
+    font-size: 14px;
+    margin-top: 10px;
+    color: #aaa;
+  }
+
+  #spatialButton.active {
+    background-color: #06c;
+    color: #0ff;
+    box-shadow: 0 0 20px #0ff;
+  }
+</style>
+</head>
+<body>
+<div id="ui">
+  <button id="spatialButton">Ativar Especial</button>
+  <div id="score">Pontuação: 0</div>
+  <div id="instructions">
+    Use as setas esquerda/direita para girar a nave, seta para cima para acelerar, barra de espaço para atirar.<br />
+    Derrote os zumbis espaciais para ganhar pontos! Ative o Especial apenas quando cheio.
+  </div>
+</div>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const WIDTH = canvas.width;
+  const HEIGHT = canvas.height;
+
+  // Nave
+  class Ship {
+    constructor() {
+      this.x = WIDTH / 2;
+      this.y = HEIGHT / 2;
+      this.radius = 15;
+      this.angle = 0; // radians
+      this.rotation = 0;
+      this.acceleration = 0;
+      this.velX = 0;
+      this.velY = 0;
+      this.friction = 0.99;
+      this.thrustPower = 0.15;
+      this.maxSpeed = 7;
+      this.blinkTime = 0;
+      this.blinkDuration = 0;
+      this.canShoot = true;
+      this.shootCooldown = 0;
+      this.lives = 3;
+      this.isExploding = false;
+      this.explodeTime = 0;
+      this.explodeDuration = 60; // frames
+      this.specialCharge = 0;
+      this.specialChargeMax = 100;
+      this.specialActive = false;
+      this.specialDuration = 180;
+      this.specialTimer = 0;
+    }
+
+    rotate(dir) {
+      this.rotation = dir * 0.08; // radians per frame
+    }
+
+    stopRotate() {
+      this.rotation = 0;
+    }
+
+    accelerate(on) {
+      this.acceleration = on ? this.thrustPower : 0;
+    }
+
+    update() {
+      if (this.isExploding) {
+        this.explodeTime++;
+        if (this.explodeTime > this.explodeDuration) {
+          this.isExploding = false;
+          this.explodeTime = 0;
+          game.lives--;
+          if (game.lives <= 0) {
+            game.gameOver = true;
+          } else {
+            this.respawn();
+          }
+        }
+        return;
+      }
+
+      // Rotate
+      this.angle += this.rotation;
+
+      // Thrust
+      if (this.acceleration > 0) {
+        this.velX += Math.cos(this.angle) * this.acceleration;
+        this.velY += Math.sin(this.angle) * this.acceleration;
+      } else {
+        // apply friction only when not accelerating
+        this.velX *= this.friction;
+        this.velY *= this.friction;
+      }
+
+      // Clamp speed
+      const speed = Math.sqrt(this.velX * this.velX + this.velY * this.velY);
+      if (speed > this.maxSpeed) {
+        const ratio = this.maxSpeed / speed;
+        this.velX *= ratio;
+        this.velY *= ratio;
+      }
+
+      // Move
+      this.x += this.velX;
+      this.y += this.velY;
+
+      // Screen wrap
+      if (this.x < 0 - this.radius) this.x = WIDTH + this.radius;
+      if (this.x > WIDTH + this.radius) this.x = 0 - this.radius;
+      if (this.y < 0 - this.radius) this.y = HEIGHT + this.radius;
+      if (this.y > HEIGHT + this.radius) this.y = 0 - this.radius;
+
+      // Shooting cooldown
+      if (!this.canShoot) {
+        this.shootCooldown++;
+        if (this.shootCooldown > 10) {
+          this.canShoot = true;
+          this.shootCooldown = 0;
+        }
+      }
+
+      // Special timer
+      if (this.specialActive) {
+        this.specialTimer++;
+        if (this.specialTimer > this.specialDuration) {
+          this.specialActive = false;
+          this.specialTimer = 0;
+        }
+      }
+    }
+
+    draw() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.angle);
+
+      if (this.isExploding) {
+        // draw explosion effect
+        const e = this.explodeTime;
+        const maxE = this.explodeDuration;
+        const g = ctx.createRadialGradient(0, 0, 0, 0, 0, this.radius*3);
+        g.addColorStop(0, `rgba(255, ${Math.floor(255 * (1 - e/maxE))},0,${1 - e/maxE})`);
+        g.addColorStop(1, 'rgba(255,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius * 3 * (e / maxE), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        return;
+      }
+
+      // Ship shape
+      ctx.strokeStyle = this.specialActive ? '#0ff' : '#fff';
+      ctx.fillStyle = this.specialActive ? 'rgba(0,255,255,0.4)' : 'transparent';
+      ctx.lineWidth = 3;
+
+      ctx.beginPath();
+      ctx.moveTo(this.radius, 0);
+      ctx.lineTo(-this.radius, -this.radius * 0.7);
+      ctx.lineTo(-this.radius * 0.2, 0);
+      ctx.lineTo(-this.radius, this.radius * 0.7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Thrusters flame if accelerating
+      if (this.acceleration > 0) {
+        ctx.strokeStyle = '#0ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-this.radius * 0.8, 0);
+        ctx.lineTo(-this.radius * 1.5, -this.radius * 0.3);
+        ctx.lineTo(-this.radius * 1.5, this.radius * 0.3);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(0, 255, 255, 0.6)';
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    shoot() {
+      if (this.canShoot && !this.isExploding) {
+        const bullet = new Bullet(
+          this.x + Math.cos(this.angle) * this.radius,
+          this.y + Math.sin(this.angle) * this.radius,
+          this.angle
+        );
+        game.bullets.push(bullet);
+        this.canShoot = false;
+      }
+    }
+
+    explode() {
+      this.isExploding = true;
+      this.explodeTime = 0;
+      this.velX = 0;
+      this.velY = 0;
+      this.acceleration = 0;
+      this.rotation = 0;
+    }
+
+    respawn() {
+      this.x = WIDTH / 2;
+      this.y = HEIGHT / 2;
+      this.velX = 0;
+      this.velY = 0;
+      this.angle = 0;
+      this.isExploding = false;
+      this.blinkTime = 0;
+      this.blinkDuration = 60;
+      this.specialCharge = 0;
+      this.specialActive = false;
+      this.specialTimer = 0;
+    }
+
+    activateSpecial() {
+      if (this.specialCharge >= this.specialChargeMax && !this.specialActive) {
+        this.specialActive = true;
+        this.specialCharge = 0;
+        this.specialTimer = 0;
+      }
+    }
+  }
+
+  // Bala da nave
+  class Bullet {
+    constructor(x, y, angle) {
+      this.x = x;
+      this.y = y;
+      this.radius = 3;
+      this.speed = 10;
+      this.angle = angle;
+      this.velX = Math.cos(angle) * this.speed;
+      this.velY = Math.sin(angle) * this.speed;
+      this.lifeTime = 0;
+      this.maxLifeTime = 60; // frames
+    }
+
+    update() {
+      this.x += this.velX;
+      this.y += this.velY;
+      this.lifeTime++;
+
+      // Remove if out of screen bounds
+      if (
+        this.x < 0 || this.x > WIDTH ||
+        this.y < 0 || this.y > HEIGHT
+      ) {
+        this.lifeTime = this.maxLifeTime + 1;
+      }
+    }
+
+    draw() {
+      ctx.fillStyle = '#0ff';
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    isDead() {
+      return this.lifeTime > this.maxLifeTime;
+    }
+  }
+
+  // Zumbi espacial
+  class Zombie {
+    constructor(x, y, size = 30) {
+      this.x = x;
+      this.y = y;
+      this.size = size;
+      this.radius = size / 2;
+      this.angle = Math.random() * Math.PI * 2;
+      this.speed = 1 + Math.random() * 1.5;
+      this.health = 2 + Math.floor(Math.random() * 3);
+      this.color = '#6b9e3a';
+      this.isDead = false;
+    }
+
+    update() {
+      // Move zombie toward the ship
+      if (game.ship.isExploding) return;
+
+      const dx = game.ship.x - this.x;
+      const dy = game.ship.y - this.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      // Move toward the ship if far enough
+      const moveStep = this.speed;
+      const nx = (dx / dist) * moveStep;
+      const ny = (dy / dist) * moveStep;
+
+      this.x += nx;
+      this.y += ny;
+
+      // Screen wrap
+      if (this.x < 0 - this.radius) this.x = WIDTH + this.radius;
+      if (this.x > WIDTH + this.radius) this.x = 0 - this.radius;
+      if (this.y < 0 - this.radius) this.y = HEIGHT + this.radius;
+      if (this.y > HEIGHT + this.radius) this.y = 0 - this.radius;
+    }
+
+    draw() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      // body
+      ctx.fillStyle = this.color;
+      ctx.strokeStyle = '#3a5a00';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, this.radius * 0.75, this.radius, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // eyes
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.ellipse(-this.radius * 0.3, -this.radius * 0.2, this.radius * 0.15, this.radius * 0.25, 0, 0, Math.PI * 2);
+      ctx.ellipse(this.radius * 0.15, -this.radius * 0.2, this.radius * 0.15, this.radius * 0.25, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#700';
+      ctx.beginPath();
+      ctx.ellipse(-this.radius * 0.3, -this.radius * 0.15, this.radius * 0.07, this.radius * 0.15, 0, 0, Math.PI * 2);
+      ctx.ellipse(this.radius * 0.15, -this.radius * 0.15, this.radius * 0.07, this.radius * 0.15, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // mouth
+      ctx.strokeStyle = '#440000';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-this.radius * 0.3, this.radius * 0.2);
+      ctx.lineTo(this.radius * 0.25, this.radius * 0.3);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    takeDamage(dmg) {
+      this.health -= dmg;
+      if (this.health <= 0) {
+        this.isDead = true;
+      }
+    }
+  }
+
+  // Game principal
+  const game = {
+    ship: new Ship(),
+    zombies: [],
+    bullets: [],
+    lives: 3,
+    score: 0,
+    gameOver: false,
+    spawnCooldown: 0,
+    spawnRate: 90, // frames, initial spawn every 1.5 seconds
+
+    init() {
+      this.ship = new Ship();
+      this.zombies = [];
+      this.bullets = [];
+      this.lives = 3;
+      this.score = 0;
+      this.gameOver = false;
+      this.spawnCooldown = 0;
+      this.spawnRate = 90;
+
+      this.spawnZombies(5);
+
+      // Buttons and events
+      this.initInput();
+      this.updateScore();
+      this.updateSpatialButton();
+    },
+
+    spawnZombies(num) {
+      for (let i = 0; i < num; i++) {
+        // Spawn away from the ship
+        let x, y, dist;
+        do {
+          x = Math.random() * WIDTH;
+          y = Math.random() * HEIGHT;
+          dist = Math.hypot(x - this.ship.x, y - this.ship.y);
+        } while (dist < 150);
+        this.zombies.push(new Zombie(x, y));
+      }
+    },
+
+    initInput() {
+      this.keyStates = {};
+
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'Space') {
+          e.preventDefault(); // prevent scrolling
+        }
+        this.keyStates[e.code] = true;
+        if (e.code === 'Space') {
+          this.ship.shoot();
+        }
+      });
+
+      window.addEventListener('keyup', (e) => {
+        this.keyStates[e.code] = false;
+      });
+
+      // Bind special button
+      const spatialButton = document.getElementById('spatialButton');
+      spatialButton.addEventListener('click', () => {
+        this.ship.activateSpecial();
+        this.updateSpatialButton();
+      });
+    },
+
+    updateSpatialButton() {
+      const btn = document.getElementById('spatialButton');
+      if (this.ship.specialCharge >= this.ship.specialChargeMax && !this.ship.specialActive) {
+        btn.disabled = false;
+        btn.classList.add('active');
+        btn.textContent = 'Especial Pronto! Clique para Ativar';
+      } else if (this.ship.specialActive) {
+        btn.disabled = true;
+        btn.classList.remove('active');
+        btn.textContent = `Especial Ativo (${Math.floor((this.ship.specialDuration - this.ship.specialTimer)/60 + 1)}s)`;
+      } else {
+        btn.disabled = true;
+        btn.classList.remove('active');
+        btn.textContent = `Carregando Especial: ${Math.floor(this.ship.specialCharge)}%`;
+      }
+    },
+
+    updateScore() {
+      const scoreDiv = document.getElementById('score');
+      scoreDiv.textContent = `Pontuação: ${this.score}`;
+    },
+
+    update() {
+      if (this.gameOver) return;
+
+      // Handle input
+      if (this.keyStates['ArrowLeft']) {
+        this.ship.rotate(-1);
+      } else if (this.keyStates['ArrowRight']) {
+        this.ship.rotate(1);
+      } else {
+        this.ship.stopRotate();
+      }
+      this.ship.accelerate(this.keyStates['ArrowUp'] === true);
+
+      this.ship.update();
+
+      // Spawn zombies progressively faster
+      this.spawnCooldown++;
+      if (this.spawnCooldown > this.spawnRate) {
+        this.spawnCooldown = 0;
+        this.spawnZombies(1);
+        if (this.spawnRate > 30) this.spawnRate -= 0.5; // increase spawn speed gradually
+      }
+
+      // Update zombies
+      for (const z of this.zombies) {
+        z.update();
+      }
+
+      // Update bullets
+      for (const b of this.bullets) {
+        b.update();
+      }
+
+      // Remove dead bullets
+      this.bullets = this.bullets.filter(b => !b.isDead());
+
+      // Collision detection: bullets -> zombies
+      for (const b of this.bullets) {
+        for (const z of this.zombies) {
+          if (!z.isDead && distance(b.x, b.y, z.x, z.y) < b.radius + z.radius) {
+            z.takeDamage(this.ship.specialActive ? 2 : 1);
+            b.lifeTime = b.maxLifeTime + 1; // remove bullet
+            if (z.isDead) {
+              this.score += 10;
+              // fill special charge on kill
+              this.ship.specialCharge += 15;
+              if (this.ship.specialCharge > this.ship.specialChargeMax) this.ship.specialCharge = this.ship.specialChargeMax;
+              this.updateScore();
+              this.updateSpatialButton();
+            }
+            break;
+          }
+        }
+      }
+
+      // Collision detection: ship -> zombies
+      if (!this.ship.isExploding) {
+        for (const z of this.zombies) {
+          if (!z.isDead && distance(this.ship.x, this.ship.y, z.x, z.y) < z.radius + this.ship.radius) {
+            // Ship explodes on collision, zombie dies
+            z.isDead = true;
+            this.ship.explode();
+            break;
+          }
+        }
+      }
+
+      // Remove dead zombies
+      this.zombies = this.zombies.filter(z => !z.isDead);
+
+      // Charge special if not active
+      if (!this.ship.specialActive && !this.ship.isExploding && this.ship.specialCharge < this.ship.specialChargeMax) {
+        this.ship.specialCharge += 0.1;
+        if (this.ship.specialCharge > this.ship.specialChargeMax) this.ship.specialCharge = this.ship.specialChargeMax;
+        this.updateSpatialButton();
+      }
+
+      if (this.ship.specialActive) {
+        this.updateSpatialButton();
+      }
+    },
+
+    draw() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+      // Draw ship
+      this.ship.draw();
+
+      // Draw bullets
+      for (const b of this.bullets) {
+        b.draw();
+      }
+
+      // Draw zombies
+      for (const z of this.zombies) {
+        z.draw();
+      }
+
+      // Draw lives
+      ctx.fillStyle = '#0ff';
+      ctx.font = '18px Segoe UI, Tahoma, Geneva, Verdana, sans-serif';
+      for (let i = 0; i < this.lives; i++) {
+        ctx.beginPath();
+        const sx = 20 + i * 30;
+        const sy = 30;
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx - 10, sy + 15);
+        ctx.lineTo(sx + 10, sy + 15);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      if (this.gameOver) {
+        ctx.fillStyle = '#f00';
+        ctx.font = '48px Segoe UI, Tahoma, Geneva, Verdana, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', WIDTH / 2, HEIGHT / 2 - 10);
+        ctx.font = '24px Segoe UI, Tahoma, Geneva, Verdana, sans-serif';
+        ctx.fillText(`Pontuação Final: ${this.score}`, WIDTH / 2, HEIGHT / 2 + 30);
+        ctx.fillText(`Pressione F5 para jogar novamente`, WIDTH / 2, HEIGHT / 2 + 60);
+      }
+    }
+  };
+
+  // Utility
+  function distance(x1, y1, x2, y2) {
+    return Math.hypot(x2 - x1, y2 - y1);
+  }
+
+  // Game loop
+  function gameLoop() {
+    game.update();
+    game.draw();
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Start game
+  game.init();
+  gameLoop();
+})();
+</script>
+</body>
+</html>
+
